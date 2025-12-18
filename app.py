@@ -23,6 +23,7 @@ from mvp_invoicing import (
     append_facture_row,
     slugify,
     fmt_eur,
+    parse_currency,  # Importez la nouvelle fonction
 )
 
 # -----------------------
@@ -44,7 +45,8 @@ PRACTICE_NAME = os.getenv("PRACTICE_NAME", "Cabinet")
 PRACTICE_ADDRESS = os.getenv("PRACTICE_ADDRESS", "")
 PRACTICE_SIRET = os.getenv("PRACTICE_SIRET", "")
 PRACTICE_TVA_NUMBER = os.getenv("PRACTICE_TVA_NUMBER", "")
-TVA_EXEMPT = os.getenv("TVA_EXEMPT", "false").lower().strip() == "true"
+# Supprimez la ligne suivante :
+# TVA_EXEMPT = os.getenv("TVA_EXEMPT", "false").lower().strip() == "true"
 
 SENDER_EMAIL = os.getenv("PRACTITIONER_EMAIL", "")
 ACCOUNTANT_EMAIL = os.getenv("COMPTABLE_EMAIL", "")
@@ -73,7 +75,7 @@ sheets, drive, gmail = get_services()
 def load_data():
     # Détecte les titres des onglets (tolérant)
     clients_title = pick_sheet_title(
-        sheets, ACCOUNTING_SPREADSHEET_ID, preferred_names=("clients", "Clients")
+        sheets, ACCOUNTING_SPREADSHEET_ID, preferred_names=("BDD client", "Clients")
     )
     products_title = pick_sheet_title(
         sheets, ACCOUNTING_SPREADSHEET_ID, preferred_names=("produits", "Produits")
@@ -95,8 +97,12 @@ def load_data():
     clients_rows = read_table_by_title(
         sheets, ACCOUNTING_SPREADSHEET_ID, clients_title, "A1:G"
     )
+    # Assurez-vous que la plage de colonnes inclut la colonne 'TVA' (ex: A1:E si TVA est en E)
     products_rows = read_table_by_title(
-        sheets, ACCOUNTING_SPREADSHEET_ID, products_title, "A1:D"
+        sheets,
+        ACCOUNTING_SPREADSHEET_ID,
+        products_title,
+        "A1:E",  # Ajustez si votre colonne TVA est plus loin
     )
 
     return {
@@ -127,7 +133,7 @@ with col_f2:
 
 # Prépare les options clients
 def client_label(c):
-    return f"{c.get('prenom', '')} {c.get('nom', '')} • {c.get('mail', '')} • [{c.get('id', '')}]"
+    return f"{c.get('prenom', '')} {c.get('nom', '')}     •     {c.get('mail', '')} "  # • [{c.get('id', '')}]"
 
 
 clients_filtered = [
@@ -145,9 +151,11 @@ selected_client_id = client_options[selected_client_label]
 
 # Prépare les options produits
 def product_label(p):
-    prix_ht = float(p.get("prix_ht", "0").replace(",", "."))
-    prix_ttc = float(p.get("prix_ttc", "0").replace(",", "."))
-    return f"{p.get('libelle', '')} • HT {fmt_eur(prix_ht)} • TTC {fmt_eur(prix_ttc)} • [{p.get('id', '')}]"
+    prix_ht_display = parse_currency(p.get("prix_ht", "0"))
+    prix_ttc_display = parse_currency(p.get("prix_ttc", "0"))
+    tva_str = p.get("tva", "0%").strip()  # Lire la colonne 'TVA' pour l'affichage
+
+    return f"{p.get('libelle', '')} • HT {fmt_eur(prix_ht_display)} • TTC {fmt_eur(prix_ttc_display)} • TVA {tva_str} • [{p.get('id', '')}]"
 
 
 products_filtered = [
@@ -175,11 +183,12 @@ with col_n:
 # Aperçu des totaux
 # -----------------------
 client_obj = find_client(clients, selected_client_id)
-product_obj = find_product(products, selected_product_id, TVA_EXEMPT)
+# Appel à find_product sans le paramètre tva_exempt
+product_obj = find_product(products, selected_product_id)
 
 montant_ht = product_obj.prix_ht * qty
 montant_ttc = product_obj.prix_ttc * qty
-montant_tva = 0.0 if TVA_EXEMPT else (montant_ttc - montant_ht)
+montant_tva = montant_ttc - montant_ht  # Calculer la TVA directement
 
 with st.expander("📄 Aperçu de la facture (totaux)", expanded=True):
     st.write(f"**Client** : {client_obj.prenom} {client_obj.nom} — {client_obj.mail}")
@@ -207,6 +216,7 @@ if btn:
         output_path = os.path.join(os.getcwd(), filename)
 
         # Génère PDF
+        # Appel à generate_invoice_pdf sans le paramètre tva_exempt
         generate_invoice_pdf(
             output_path=output_path,
             invoice_number=invoice_number,
@@ -215,7 +225,7 @@ if btn:
             practice_address=PRACTICE_ADDRESS,
             practice_siret=PRACTICE_SIRET,
             practice_tva_number=PRACTICE_TVA_NUMBER,
-            tva_exempt=TVA_EXEMPT,
+            # Supprimez la ligne suivante : tva_exempt=TVA_EXEMPT,
             client=client_obj,
             product=product_obj,
             qty=qty,
@@ -253,6 +263,10 @@ if btn:
                 st.error(f"❌ Erreur envoi email: {e}")
 
         # Log dans 'factures'
+        montant_ht = product_obj.prix_ht * qty
+        montant_ttc = product_obj.prix_ttc * qty
+        montant_tva = montant_ttc - montant_ht  # Calculer la TVA directement
+
         row = [
             invoice_number,
             today,

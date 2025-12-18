@@ -112,6 +112,25 @@ def fmt_eur(x: float) -> str:
     return f"{x:,.2f} €".replace(",", " ").replace(".", ",")
 
 
+def parse_currency(value: str) -> float:
+    """
+    Convertit une chaîne monétaire (ex: '1 025,48 €') en float.
+    Gère les espaces comme séparateur de milliers et la virgule comme séparateur décimal.
+    """
+    if not isinstance(value, str):
+        return 0.0
+    try:
+        # Supprime le symbole €, les espaces (séparateur de milliers),
+        # et remplace la virgule décimale par un point.
+        cleaned_value = (
+            value.replace("€", "").replace(" ", "").replace(",", ".").strip()
+        )
+        return float(cleaned_value)
+    except (ValueError, TypeError):
+        # Retourne 0.0 si la conversion échoue (ex: chaîne vide ou non numérique)
+        return 0.0
+
+
 # --------------------------
 # Google Sheets utils
 # --------------------------
@@ -280,16 +299,10 @@ class Product:
     libelle: str
     prix_ht: float
     prix_ttc: float
-    tva_rate: float  # 0.0 if exempt or HT == TTC
-
-
-def compute_tva_rate(ht: float, ttc: float, tva_exempt: bool) -> float:
-    if tva_exempt:
-        return 0.0
-    if ht <= 0:
-        return 0.0
-    r = max(0.0, (ttc / ht) - 1.0)
-    return r
+    tva_rate_for_display: (
+        float  # Nouveau: le taux de TVA en décimal (ex: 0.20 pour 20%)
+    )
+    is_tva_exempt: bool  # Nouveau: True si TVA 0%
 
 
 def find_client(clients: List[Dict[str, str]], id_: str) -> Client:
@@ -307,19 +320,45 @@ def find_client(clients: List[Dict[str, str]], id_: str) -> Client:
     raise ValueError(f"Client id={id_} introuvable.")
 
 
-def find_product(products: List[Dict[str, str]], id_: str, tva_exempt: bool) -> Product:
+def find_product(
+    products: List[Dict[str, str]], id_: str
+) -> Product:  # Supprimez le paramètre tva_exempt
     for p in products:
         if p.get("id") == id_:
-            ht = float(p.get("prix_ht", "0").replace(",", "."))
-            ttc_raw = float(p.get("prix_ttc", "0").replace(",", "."))
-            rate = compute_tva_rate(ht, ttc_raw, tva_exempt)
-            ttc = ht if tva_exempt else ttc_raw
+            ht = parse_currency(p.get("prix_ht", "0"))
+            ttc_from_sheet = parse_currency(p.get("prix_ttc", "0"))
+            tva_str = p.get("tva", "0%").strip()  # Lire la colonne 'TVA' du sheet
+
+            # Déterminer si le produit est exempt de TVA
+            is_tva_exempt = tva_str == "0%" or tva_str == "0"
+
+            tva_rate_for_display = 0.0
+            if not is_tva_exempt:
+                try:
+                    # Tenter de parser le pourcentage de TVA directement de la colonne 'TVA'
+                    # Ex: "20%" -> 20.0 -> 0.20
+                    tva_rate_for_display = (
+                        parse_currency(tva_str.replace("%", "")) / 100.0
+                    )
+                except (ValueError, TypeError):
+                    # Fallback: si le parsing échoue, calculer à partir de HT/TTC
+                    if ht > 0:
+                        tva_rate_for_display = max(0.0, (ttc_from_sheet / ht) - 1.0)
+
+            # Assurer la cohérence du TTC :
+            # Si exempt, TTC doit être égal à HT.
+            # Sinon, on fait confiance au TTC fourni dans la feuille.
+            final_ttc = ttc_from_sheet
+            if is_tva_exempt:
+                final_ttc = ht
+
             return Product(
                 id=p.get("id", ""),
                 libelle=p.get("libelle", ""),
                 prix_ht=ht,
-                prix_ttc=ttc,
-                tva_rate=rate,
+                prix_ttc=final_ttc,
+                tva_rate_for_display=tva_rate_for_display,
+                is_tva_exempt=is_tva_exempt,
             )
     raise ValueError(f"Produit id={id_} introuvable.")
 
@@ -337,9 +376,9 @@ def generate_invoice_pdf(
     practice_address: str,
     practice_siret: str,
     practice_tva_number: Optional[str],
-    tva_exempt: bool,
+    # Supprimez la ligne suivante : tva_exempt: bool,
     client: Client,
-    product: Product,
+    product: Product,  # L'objet product contient maintenant les infos TVA
     qty: int,
     notes: Optional[str],
 ):
@@ -368,7 +407,8 @@ def generate_invoice_pdf(
         elems.append(
             Paragraph(f"N° TVA intracom : {practice_tva_number}", style_normal)
         )
-    if tva_exempt:
+    # Remplacer : if tva_exempt:
+    if product.is_tva_exempt:  # Utiliser le drapeau spécifique au produit
         elems.append(
             Paragraph(
                 "Exonération de TVA (art. 261 du CGI – actes médicaux).", style_small
@@ -395,8 +435,10 @@ def generate_invoice_pdf(
     # Détails ligne
     montant_ht = product.prix_ht * qty
     montant_ttc = product.prix_ttc * qty
-    montant_tva = 0.0 if tva_exempt else (montant_ttc - montant_ht)
-    tva_rate_pct = int(round(product.tva_rate * 100)) if product.tva_rate > 0 else 0
+    montant_tva = montant_ttc - montant_ht  # Calculer la TVA directement
+    tva_rate_pct_display = int(
+        round(product.tva_rate_for_display * 100)
+    )  # Utiliser le taux pour l'affichage
 
     data = [
         ["Libellé", "Qté", "PU HT", "TVA", "Total HT", "Total TTC"],
@@ -404,7 +446,7 @@ def generate_invoice_pdf(
             product.libelle,
             str(qty),
             fmt_eur(product.prix_ht),
-            f"{tva_rate_pct}%",
+            f"{tva_rate_pct_display}%",  # Afficher le taux de TVA du produit
             fmt_eur(montant_ht),
             fmt_eur(montant_ttc),
         ],
@@ -534,7 +576,8 @@ def main():
     practice_address = os.getenv("PRACTICE_ADDRESS", "")
     practice_siret = os.getenv("PRACTICE_SIRET", "")
     practice_tva_number = os.getenv("PRACTICE_TVA_NUMBER", "")
-    tva_exempt = os.getenv("TVA_EXEMPT", "false").lower().strip() == "true"
+    # Supprimez la ligne suivante :
+    # tva_exempt = os.getenv("TVA_EXEMPT", "false").lower().strip() == "true"
 
     sender_email = os.getenv("PRACTITIONER_EMAIL", "")
     accountant_email = os.getenv("COMPTABLE_EMAIL", "")
@@ -579,7 +622,8 @@ def main():
 
     # Recherche des entités
     client = find_client(clients_rows, args.client_id)
-    product = find_product(products_rows, args.product_id, tva_exempt)
+    # Appel à find_product sans le paramètre tva_exempt
+    product = find_product(products_rows, args.product_id)
 
     # Numéro de facture (mensuel)
     invoice_number = get_next_invoice_number_monthly(sheets, acc_ss_id, factures_title)
@@ -589,6 +633,7 @@ def main():
     filename = f"{invoice_number}_{slugify(client.nom)}_{slugify(client.prenom)}.pdf"
     output_path = os.path.join(os.getcwd(), filename)
 
+    # Appel à generate_invoice_pdf sans le paramètre tva_exempt
     generate_invoice_pdf(
         output_path=output_path,
         invoice_number=invoice_number,
@@ -597,7 +642,7 @@ def main():
         practice_address=practice_address,
         practice_siret=practice_siret,
         practice_tva_number=practice_tva_number,
-        tva_exempt=tva_exempt,
+        # Supprimez la ligne suivante : tva_exempt=tva_exempt,
         client=client,
         product=product,
         qty=args.qty,
@@ -637,7 +682,7 @@ def main():
     # Log factures
     montant_ht = product.prix_ht * args.qty
     montant_ttc = product.prix_ttc * args.qty
-    montant_tva = 0.0 if tva_exempt else (montant_ttc - montant_ht)
+    montant_tva = montant_ttc - montant_ht  # Calculer la TVA directement
 
     row = [
         invoice_number,
