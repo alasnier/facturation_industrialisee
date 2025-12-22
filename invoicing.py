@@ -4,7 +4,7 @@
 """
 MVP facturation (Google Sheets + Drive + Gmail) - version 'comptabilite' (un seul fichier)
 
-- Lit le Google Sheet 'comptabilite' avec 3 onglets: clients, produits, factures
+- Lit le Google Sheet avec 3 onglets: clients, produits, factures
 - Génère un PDF de facture (ReportLab)
 - Upload le PDF dans un dossier Google Drive
 - Envoie la facture par email via Gmail API
@@ -16,7 +16,7 @@ Dépendances:
 
 Fichiers requis:
   credentials.json (OAuth 2.0 Desktop app)
-  .env (voir exemple dans la réponse)
+  .env
 
 Usage:
   python mvp_invoicing.py --client-id <ID_CLIENT> --product-id <ID_PRODUIT> --qty 1 --notes "Séance du 5/12"
@@ -27,6 +27,7 @@ import sys
 import re
 import base64
 import argparse
+import unicodedata
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -39,14 +40,12 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.styles import ParagraphStyle
 
 # Gmail MIME
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+from email.mime.application import MIMEApplication
 
 # Google APIs
 from google.oauth2.credentials import Credentials
@@ -56,25 +55,25 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
-# --- OAuth scopes ---
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/gmail.send",
 ]
 
+
 # --------------------------
-# Helpers & utilitaires
+# Auth / Services
 # --------------------------
 
 
 def load_google_credentials() -> Credentials:
-    """
-    Charge ou crée les credentials OAuth (token.json) pour Desktop app.
-    """
+    """Charge ou crée les credentials OAuth (token.json) pour Desktop app."""
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -82,6 +81,7 @@ def load_google_credentials() -> Credentials:
             except Exception as e:
                 print(f"⚠️ Refresh token error: {e}")
                 creds = None
+
         if not creds:
             if not os.path.exists("credentials.json"):
                 raise FileNotFoundError(
@@ -89,31 +89,108 @@ def load_google_credentials() -> Credentials:
                 )
             flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
             creds = flow.run_local_server(port=0)
-        # Sauvegarde
-        with open("token.json", "w") as token:
+
+        with open("token.json", "w", encoding="utf-8") as token:
             token.write(creds.to_json())
+
     return creds
 
 
 def build_services(creds: Credentials):
-    sheets = build("sheets", "v4", credentials=creds)
-    drive = build("drive", "v3", credentials=creds)
-    gmail = build("gmail", "v1", credentials=creds)
+    # cache_discovery=False => plus robuste sur certains environnements
+    sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+    gmail = build("gmail", "v1", credentials=creds, cache_discovery=False)
     return sheets, drive, gmail
 
 
+# --------------------------
+# Utils (format / parse)
+# --------------------------
+
+
 def slugify(s: str) -> str:
-    s = s.lower().strip()
+    s = (s or "").lower().strip()
     s = re.sub(r"[^a-z0-9]+", "_", s)
     return re.sub(r"_+", "_", s).strip("_")
 
 
 def fmt_eur(x: float) -> str:
+    # format FR: séparateur milliers espace + virgule
     return f"{x:,.2f} €".replace(",", " ").replace(".", ",")
 
 
+def sanitize_pdf_text(s: str) -> str:
+    """
+    Évite les carrés noirs dans ReportLab en remplaçant:
+    - espace insécable U+00A0
+    - espace fine insécable U+202F
+    par un espace normal.
+    """
+    if s is None:
+        return ""
+    return str(s).replace("\u202f", " ").replace("\u00a0", " ")
+
+
+def normalize_money_display(val) -> str:
+    """Affichage proche du Google Sheet (on ne normalise pas trop côté UI)."""
+    if val is None:
+        return ""
+    return str(val).strip()
+
+
+def parse_currency(val) -> float:
+    """
+    Parse robuste en float.
+    Supporte:
+      - espaces: ' ', U+00A0, U+202F
+      - apostrophes (1'234.56)
+      - € et autres caractères
+      - formats FR/US/CH
+    Règle: le séparateur décimal est celui (',' ou '.') le plus à droite.
+    """
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    s = str(val).strip()
+    if s == "":
+        return 0.0
+
+    s = unicodedata.normalize("NFKC", s)
+    s = (
+        s.replace("€", "")
+        .replace(" ", "")
+        .replace("\u00a0", "")  # NBSP
+        .replace("\u202f", "")  # NNBSP
+        .replace("’", "")
+        .replace("'", "")
+        .strip()
+    )
+
+    s = re.sub(r"[^\d\.,\-\+]", "", s)
+
+    if re.fullmatch(r"[+-]?\d+", s):
+        return float(s)
+
+    if s.count(",") == 1 and s.count(".") == 0:
+        return float(s.replace(",", "."))
+    if s.count(".") == 1 and s.count(",") == 0:
+        return float(s)
+
+    last_comma = s.rfind(",")
+    last_dot = s.rfind(".")
+    if last_dot > last_comma:
+        s = s.replace(",", "")
+        return float(s)
+    else:
+        s = s.replace(".", "").replace(",", ".")
+        return float(s)
+
+
 # --------------------------
-# Google Sheets utils
+# Sheets helpers
 # --------------------------
 
 
@@ -139,10 +216,6 @@ def pick_sheet_title(
 def read_table_by_title(
     sheets, spreadsheet_id: str, sheet_title: str, range_columns: str
 ) -> List[Dict[str, str]]:
-    """
-    Lit un onglet (sheet_title) et une plage de colonnes (ex 'A1:G'),
-    en gérant correctement les titres avec espaces/accents via quotes.
-    """
     a1 = f"'{sheet_title}'!{range_columns}"
     res = (
         sheets.spreadsheets()
@@ -166,9 +239,6 @@ def read_table_by_title(
 def init_factures_header_if_missing(
     sheets, spreadsheet_id: str, sheet_title: str = "factures"
 ):
-    """
-    Garantit l'existence de l'onglet 'factures' et de ses en-têtes.
-    """
     try:
         res = (
             sheets.spreadsheets()
@@ -180,9 +250,8 @@ def init_factures_header_if_missing(
         if values:
             return
     except HttpError:
-        pass  # peut être absent
+        pass
 
-    # Crée l'onglet s'il n'existe pas déjà
     titles = list_sheet_titles(sheets, spreadsheet_id)
     if sheet_title not in titles:
         sheets.spreadsheets().batchUpdate(
@@ -207,6 +276,7 @@ def init_factures_header_if_missing(
             "email_envoye_a",
         ]
     ]
+
     sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=f"'{sheet_title}'!A1:M1",
@@ -227,13 +297,8 @@ def append_facture_row(sheets, spreadsheet_id: str, sheet_title: str, row: List[
 def get_next_invoice_number_monthly(
     sheets, spreadsheet_id: str, sheet_title: str = "factures"
 ) -> str:
-    """
-    Numérotation mensuelle: FACT-YYYYMM-#### (#### séquentiel dans le mois courant).
-    """
     now = datetime.now()
-    year = now.year
-    month = now.month
-    yyyymm = f"{year}{month:02d}"
+    yyyymm = f"{now.year}{now.month:02d}"
     prefix = f"FACT-{yyyymm}-"
 
     try:
@@ -278,18 +343,19 @@ class Client:
 class Product:
     id: str
     libelle: str
+
+    # Raw (affichage identique au sheet)
+    prix_ht_raw: str
+    prix_ttc_raw: str
+    tva_raw: str
+
+    # Numeric (calcul)
     prix_ht: float
     prix_ttc: float
-    tva_rate: float  # 0.0 if exempt or HT == TTC
 
-
-def compute_tva_rate(ht: float, ttc: float, tva_exempt: bool) -> float:
-    if tva_exempt:
-        return 0.0
-    if ht <= 0:
-        return 0.0
-    r = max(0.0, (ttc / ht) - 1.0)
-    return r
+    # TVA info
+    tva_rate_for_display: float
+    is_tva_exempt: bool
 
 
 def find_client(clients: List[Dict[str, str]], id_: str) -> Client:
@@ -307,25 +373,48 @@ def find_client(clients: List[Dict[str, str]], id_: str) -> Client:
     raise ValueError(f"Client id={id_} introuvable.")
 
 
-def find_product(products: List[Dict[str, str]], id_: str, tva_exempt: bool) -> Product:
+def find_product(products: List[Dict[str, str]], id_: str) -> Product:
     for p in products:
         if p.get("id") == id_:
-            ht = float(p.get("prix_ht", "0").replace(",", "."))
-            ttc_raw = float(p.get("prix_ttc", "0").replace(",", "."))
-            rate = compute_tva_rate(ht, ttc_raw, tva_exempt)
-            ttc = ht if tva_exempt else ttc_raw
+            ht_raw = normalize_money_display(p.get("prix_ht", "0"))
+            ttc_raw = normalize_money_display(p.get("prix_ttc", "0"))
+            tva_raw = normalize_money_display(p.get("tva", "0%")).strip()
+
+            ht = parse_currency(ht_raw)
+            ttc_from_sheet = parse_currency(ttc_raw)
+
+            is_tva_exempt = tva_raw in ("0", "0%", "0.0", "0.00", "0,0", "0,00")
+
+            # taux TVA (si besoin fallback)
+            tva_rate_for_display = 0.0
+            if not is_tva_exempt:
+                try:
+                    tva_rate_for_display = (
+                        parse_currency(tva_raw.replace("%", "")) / 100.0
+                    )
+                except Exception:
+                    if ht > 0:
+                        tva_rate_for_display = max(0.0, (ttc_from_sheet / ht) - 1.0)
+
+            final_ttc = ht if is_tva_exempt else ttc_from_sheet
+
             return Product(
                 id=p.get("id", ""),
                 libelle=p.get("libelle", ""),
+                prix_ht_raw=ht_raw,
+                prix_ttc_raw=ttc_raw,
+                tva_raw=tva_raw,
                 prix_ht=ht,
-                prix_ttc=ttc,
-                tva_rate=rate,
+                prix_ttc=final_ttc,
+                tva_rate_for_display=tva_rate_for_display,
+                is_tva_exempt=is_tva_exempt,
             )
+
     raise ValueError(f"Produit id={id_} introuvable.")
 
 
 # --------------------------
-# PDF generation
+# PDF
 # --------------------------
 
 
@@ -337,7 +426,6 @@ def generate_invoice_pdf(
     practice_address: str,
     practice_siret: str,
     practice_tva_number: Optional[str],
-    tva_exempt: bool,
     client: Client,
     product: Product,
     qty: int,
@@ -354,57 +442,73 @@ def generate_invoice_pdf(
     styles = getSampleStyleSheet()
     style_title = styles["Heading1"]
     style_normal = styles["Normal"]
-    style_right = ParagraphStyle("right", parent=styles["Normal"], alignment=TA_RIGHT)
     style_small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9)
     elems = []
 
     # En-tête cabinet
-    elems.append(Paragraph(practice_name, style_title))
+    elems.append(Paragraph(sanitize_pdf_text(practice_name), style_title))
+
     if practice_address:
-        elems.append(Paragraph(practice_address, style_normal))
+        # ✅ gère "\n" littéral dans .env
+        addr = practice_address.replace("\\n", "\n")
+        addr = sanitize_pdf_text(addr).replace("\n", "<br/>")
+        elems.append(Paragraph(addr, style_normal))
+
     if practice_siret:
-        elems.append(Paragraph(f"SIRET : {practice_siret}", style_normal))
+        elems.append(
+            Paragraph(sanitize_pdf_text(f"SIRET : {practice_siret}"), style_normal)
+        )
     if practice_tva_number:
         elems.append(
-            Paragraph(f"N° TVA intracom : {practice_tva_number}", style_normal)
+            Paragraph(
+                sanitize_pdf_text(f"N° TVA intracom : {practice_tva_number}"),
+                style_normal,
+            )
         )
-    if tva_exempt:
+
+    if product.is_tva_exempt:
         elems.append(
             Paragraph(
                 "Exonération de TVA (art. 261 du CGI – actes médicaux).", style_small
             )
         )
-    elems.append(Spacer(1, 10))
 
-    # Facture + date
-    elems.append(Paragraph(f"<b>Facture n° {invoice_number}</b>", style_normal))
-    elems.append(Paragraph(f"Date : {date_str}", style_normal))
+    elems.append(Spacer(1, 10))
+    elems.append(
+        Paragraph(
+            f"<b>Facture n° {sanitize_pdf_text(invoice_number)}</b>", style_normal
+        )
+    )
+    elems.append(Paragraph(f"Date : {sanitize_pdf_text(date_str)}", style_normal))
     elems.append(Spacer(1, 6))
 
     # Client
     client_block = f"""
     <b>Client</b><br/>
-    {client.prenom} {client.nom}<br/>
-    {client.rue}<br/>
-    {client.code_postal} {client.ville}<br/>
-    {client.mail}
+    {sanitize_pdf_text(client.prenom)} {sanitize_pdf_text(client.nom)}<br/>
+    {sanitize_pdf_text(client.rue)}<br/>
+    {sanitize_pdf_text(client.code_postal)} {sanitize_pdf_text(client.ville)}<br/>
+    {sanitize_pdf_text(client.mail)}
     """
     elems.append(Paragraph(client_block, style_normal))
     elems.append(Spacer(1, 12))
 
-    # Détails ligne
+    # Calculs
     montant_ht = product.prix_ht * qty
     montant_ttc = product.prix_ttc * qty
-    montant_tva = 0.0 if tva_exempt else (montant_ttc - montant_ht)
-    tva_rate_pct = int(round(product.tva_rate * 100)) if product.tva_rate > 0 else 0
+    montant_tva = montant_ttc - montant_ht
+
+    # ✅ Affichage PU/TVA "raw" mais safe PDF (pas de carré noir)
+    pu_ht_display = sanitize_pdf_text(product.prix_ht_raw)
+    tva_display = sanitize_pdf_text(product.tva_raw)
 
     data = [
         ["Libellé", "Qté", "PU HT", "TVA", "Total HT", "Total TTC"],
         [
-            product.libelle,
+            sanitize_pdf_text(product.libelle),
             str(qty),
-            fmt_eur(product.prix_ht),
-            f"{tva_rate_pct}%",
+            pu_ht_display,
+            tva_display,
             fmt_eur(montant_ht),
             fmt_eur(montant_ttc),
         ],
@@ -425,7 +529,6 @@ def generate_invoice_pdf(
     elems.append(table)
     elems.append(Spacer(1, 10))
 
-    # Totaux
     totals = [
         ["Total HT", fmt_eur(montant_ht)],
         ["TVA", fmt_eur(montant_tva)],
@@ -444,10 +547,11 @@ def generate_invoice_pdf(
     elems.append(Spacer(1, 8))
 
     if notes:
-        elems.append(Paragraph(f"<b>Notes :</b> {notes}", style_small))
+        elems.append(
+            Paragraph(f"<b>Notes :</b> {sanitize_pdf_text(notes)}", style_small)
+        )
         elems.append(Spacer(1, 6))
 
-    # Mentions
     elems.append(
         Paragraph(
             "Paiement comptant à réception. Facture émise électroniquement.",
@@ -493,40 +597,47 @@ def send_email_gmail(
     html_body: str,
     attachment_path: str,
 ):
-    msg = MIMEMultipart()
+    """
+    Envoi mail "standard" (évite pièces jointes dupliquées selon certains clients):
+    - multipart/mixed
+      - multipart/alternative (plain + html)
+      - attachment PDF (1 seule fois)
+    """
+    msg = MIMEMultipart("mixed")
     msg["To"] = to
     if cc:
         msg["Cc"] = cc
     msg["From"] = sender or ""
     msg["Subject"] = subject
 
-    msg.attach(MIMEText(html_body, "html"))
+    alt = MIMEMultipart("alternative")
+    alt.attach(
+        MIMEText("Veuillez trouver votre facture en pièce jointe.", "plain", "utf-8")
+    )
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(alt)
 
-    # Pièce jointe
     with open(attachment_path, "rb") as f:
-        part = MIMEBase("application", "pdf")
-        part.set_payload(f.read())
-        encoders.encode_base64(part)
+        part = MIMEApplication(f.read(), _subtype="pdf")
         part.add_header(
             "Content-Disposition",
-            f'attachment; filename="{os.path.basename(attachment_path)}"',
+            "attachment",
+            filename=os.path.basename(attachment_path),
         )
         msg.attach(part)
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    message = {"raw": raw}
-    gmail.users().messages().send(userId="me", body=message).execute()
+    gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
 # --------------------------
-# CLI main
+# CLI
 # --------------------------
 
 
 def main():
     load_dotenv()
 
-    # ENV
     folder_id = os.getenv("GOOGLE_FOLDER_ID")
     acc_ss_id = os.getenv("ACCOUNTING_SPREADSHEET_ID")
 
@@ -534,7 +645,6 @@ def main():
     practice_address = os.getenv("PRACTICE_ADDRESS", "")
     practice_siret = os.getenv("PRACTICE_SIRET", "")
     practice_tva_number = os.getenv("PRACTICE_TVA_NUMBER", "")
-    tva_exempt = os.getenv("TVA_EXEMPT", "false").lower().strip() == "true"
 
     sender_email = os.getenv("PRACTITIONER_EMAIL", "")
     accountant_email = os.getenv("COMPTABLE_EMAIL", "")
@@ -545,26 +655,22 @@ def main():
         )
         sys.exit(1)
 
-    # Args
     parser = argparse.ArgumentParser(description="Génération & envoi de facture")
-    parser.add_argument("--client-id", required=True, help="ID client (colonne 'id')")
-    parser.add_argument("--product-id", required=True, help="ID produit (colonne 'id')")
-    parser.add_argument("--qty", type=int, default=1, help="Quantité")
-    parser.add_argument("--notes", type=str, default="", help="Notes sur la facture")
+    parser.add_argument("--client-id", required=True)
+    parser.add_argument("--product-id", required=True)
+    parser.add_argument("--qty", type=int, default=1)
+    parser.add_argument("--notes", type=str, default="")
     args = parser.parse_args()
 
-    # OAuth + services
     creds = load_google_credentials()
     sheets, drive, gmail = build_services(creds)
 
-    # Onglets (tolérants)
     clients_title = pick_sheet_title(
-        sheets, acc_ss_id, preferred_names=("clients", "Clients")
+        sheets, acc_ss_id, preferred_names=("clients", "Clients", "BDD client")
     )
     products_title = pick_sheet_title(
         sheets, acc_ss_id, preferred_names=("produits", "Produits")
     )
-    # Pour 'factures', on exige qu'il existe ou on le crée (fallback False pour forcer ce nom)
     try:
         factures_title = pick_sheet_title(
             sheets, acc_ss_id, preferred_names=("factures", "Factures"), fallback=False
@@ -573,19 +679,17 @@ def main():
         factures_title = "factures"
     init_factures_header_if_missing(sheets, acc_ss_id, factures_title)
 
-    # Lecture des tables
     clients_rows = read_table_by_title(sheets, acc_ss_id, clients_title, "A1:G")
-    products_rows = read_table_by_title(sheets, acc_ss_id, products_title, "A1:D")
+    products_rows = read_table_by_title(
+        sheets, acc_ss_id, products_title, "A1:E"
+    )  # id, libellé, prix_ht, TVA, prix_ttc
 
-    # Recherche des entités
     client = find_client(clients_rows, args.client_id)
-    product = find_product(products_rows, args.product_id, tva_exempt)
+    product = find_product(products_rows, args.product_id)
 
-    # Numéro de facture (mensuel)
     invoice_number = get_next_invoice_number_monthly(sheets, acc_ss_id, factures_title)
     today = datetime.now().strftime("%d/%m/%Y")
 
-    # Génération PDF
     filename = f"{invoice_number}_{slugify(client.nom)}_{slugify(client.prenom)}.pdf"
     output_path = os.path.join(os.getcwd(), filename)
 
@@ -597,18 +701,15 @@ def main():
         practice_address=practice_address,
         practice_siret=practice_siret,
         practice_tva_number=practice_tva_number,
-        tva_exempt=tva_exempt,
         client=client,
         product=product,
         qty=args.qty,
         notes=args.notes if args.notes else None,
     )
 
-    # Upload Drive
     uploaded = upload_to_drive(drive, output_path, folder_id)
     drive_link = uploaded["link"]
 
-    # Envoi email
     recipient = client.mail or ""
     if recipient:
         subject = f"Votre facture {invoice_number} - {practice_name}"
@@ -619,25 +720,19 @@ def main():
         <p>Vous pouvez également consulter la facture en ligne : {drive_link}ouvrir dans Drive</a>.</p>
         <p>Bien cordialement,<br/>{practice_name}</p>
         """
-        try:
-            send_email_gmail(
-                gmail,
-                sender_email or "me",
-                recipient,
-                accountant_email or None,
-                subject,
-                html_body,
-                output_path,
-            )
-        except Exception as e:
-            print(f"❌ Erreur envoi email: {e}")
-    else:
-        print("⚠️ Le client n'a pas d'email. Facture non envoyée.")
+        send_email_gmail(
+            gmail,
+            sender_email or "me",
+            recipient,
+            accountant_email or None,
+            subject,
+            html_body,
+            output_path,
+        )
 
-    # Log factures
     montant_ht = product.prix_ht * args.qty
     montant_ttc = product.prix_ttc * args.qty
-    montant_tva = 0.0 if tva_exempt else (montant_ttc - montant_ht)
+    montant_tva = montant_ttc - montant_ht
 
     row = [
         invoice_number,
@@ -656,14 +751,9 @@ def main():
     ]
     append_facture_row(sheets, acc_ss_id, factures_title, row)
 
-    # Logs console
     print(f"✅ Facture générée: {output_path}")
     print(f"✅ Upload Drive: {drive_link}")
-    if recipient:
-        print(f"✅ Email envoyé à: {recipient} (CC: {accountant_email or 'aucun'})")
-    print(
-        f"✅ Log ajouté dans l'onglet '{factures_title}' du spreadsheet ({acc_ss_id})"
-    )
+    print(f"✅ Log ajouté dans '{factures_title}'")
 
 
 if __name__ == "__main__":
