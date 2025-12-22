@@ -2,8 +2,8 @@
 @echo off
 setlocal EnableExtensions
 
-REM --- Chemin du projet ---
-set "PROJECT_DIR=C:\Users\a050320\OneDrive - Alliance\Documents PERSO\side_projects\facturation_industrialisee"
+REM --- Chemin du projet (installation remote proposee) ---
+set "PROJECT_DIR=C:\Facturation\facturation_industrialisee"
 
 REM --- Chemin du venv ---
 set "VENV_ACTIVATE=%PROJECT_DIR%\facturation_uvenv\Scripts\activate.bat"
@@ -29,7 +29,7 @@ if exist "%VENV_ACTIVATE%" (
 
 if exist "requirements.txt" (
   echo [INFO] Mise a jour dependances...
-  uv python -m pip install -r requirements.txt
+  python -m pip install -r requirements.txt
 )
 
 echo [INFO] Lancement Streamlit...
