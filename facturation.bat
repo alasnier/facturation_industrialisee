@@ -12,7 +12,7 @@ cd /d "%PROJECT_DIR%"
 
 echo [INFO] Mise a jour du code (branche release)...
 git checkout release
-git pull origin release
+git pull --ff-only origin release
 if errorlevel 1 (
   echo [ERREUR] git pull a echoue.
   pause
@@ -29,7 +29,7 @@ if exist "%VENV_ACTIVATE%" (
 
 if exist "requirements.txt" (
   echo [INFO] Mise a jour dependances...
-  pip install -r requirements.txt
+  uv python -m pip install -r requirements.txt
 )
 
 echo [INFO] Lancement Streamlit...
