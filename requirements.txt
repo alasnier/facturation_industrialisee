@@ -52,3 +52,4 @@ tzdatauritemplate
 urllib3
 watchdog
 dotenv
+pythonw

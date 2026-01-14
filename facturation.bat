@@ -52,7 +52,7 @@ if exist "requirements.txt" (
 
 echo [4/4]   [INFO] Lancement de l'interface web...
 echo .
-python -m streamlit run app.py
+start "" /B pythonw -m streamlit run app.py >nul 2>&1
 echo .
 echo ========================================
 echo   Interface prete dans votre navigateur
@@ -61,7 +61,5 @@ echo .
 echo .
 echo .
 
-timeout /t 5 /nobreak >nul
-
-@REM pause
-endlocal
+timeout /t 2 /nobreak >nul
+exit
