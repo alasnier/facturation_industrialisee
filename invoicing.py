@@ -428,10 +428,14 @@ def generate_invoice_pdf(
     practice_address: str,
     practice_siret: str,
     practice_tva_number: Optional[str],
+    practice_adeli_number: Optional[str],
     client: Client,
     product: Product,
     qty: int,
     notes: Optional[str],
+    montant_ht_override: Optional[float] = None,
+    montant_tva_override: Optional[float] = None,
+    montant_ttc_override: Optional[float] = None,
 ):
     doc = SimpleDocTemplate(
         output_path,
@@ -459,6 +463,10 @@ def generate_invoice_pdf(
     if practice_siret:
         elems.append(
             Paragraph(sanitize_pdf_text(f"SIRET : {practice_siret}"), style_normal)
+        )
+    if practice_adeli_number:
+        elems.append(
+            Paragraph(sanitize_pdf_text(f"N° ADELI : {practice_adeli_number}"), style_normal)
         )
     if practice_tva_number:
         elems.append(
@@ -495,14 +503,24 @@ def generate_invoice_pdf(
     elems.append(Paragraph(client_block, style_normal))
     elems.append(Spacer(1, 12))
 
-    # Calculs
-    montant_ht = product.prix_ht * qty
-    montant_ttc = product.prix_ttc * qty
-    montant_tva = montant_ttc - montant_ht
+    # Calculs (utiliser les montants override si fournis pour produit variable)
+    if montant_ht_override is not None:
+        montant_ht = montant_ht_override
+        montant_tva = montant_tva_override if montant_tva_override is not None else montant_ht * 0.20
+        montant_ttc = montant_ttc_override if montant_ttc_override is not None else montant_ht + montant_tva
+    else:
+        montant_ht = product.prix_ht * qty
+        montant_ttc = product.prix_ttc * qty
+        montant_tva = montant_ttc - montant_ht
 
     # ✅ Affichage PU/TVA "raw" mais safe PDF (pas de carré noir)
-    pu_ht_display = sanitize_pdf_text(product.prix_ht_raw)
-    tva_display = sanitize_pdf_text(product.tva_raw)
+    # Pour produit variable, afficher "Variable" au lieu du prix unitaire
+    if montant_ht_override is not None:
+        pu_ht_display = "Variable"
+        tva_display = "20%"
+    else:
+        pu_ht_display = sanitize_pdf_text(product.prix_ht_raw)
+        tva_display = sanitize_pdf_text(product.tva_raw)
 
     data = [
         ["Libellé", "Qté", "PU HT", "TVA", "Total HT", "Total TTC"],
@@ -647,6 +665,7 @@ def main():
     practice_address = os.getenv("PRACTICE_ADDRESS", "")
     practice_siret = os.getenv("PRACTICE_SIRET", "")
     practice_tva_number = os.getenv("PRACTICE_TVA_NUMBER", "")
+    practice_adeli_number = os.getenv("PRACTICE_ADELI_NUMBER", "")
 
     sender_email = os.getenv("PRACTITIONER_EMAIL", "")
     accountant_email = os.getenv("COMPTABLE_EMAIL", "")
@@ -703,6 +722,7 @@ def main():
         practice_address=practice_address,
         practice_siret=practice_siret,
         practice_tva_number=practice_tva_number,
+        practice_adeli_number=practice_adeli_number,
         client=client,
         product=product,
         qty=args.qty,
