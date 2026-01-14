@@ -9,7 +9,7 @@ MVP facturation (Google Sheets + Drive + Gmail) - version 'comptabilite' (un seu
 - Upload le PDF dans un dossier Google Drive
 - Envoie la facture par email via Gmail API
 - Journalise la facture dans l'onglet 'factures'
-- Numérotation: FACT-YYYYMM-#### (ex: FACT-202512-0001)
+- Numérotation: YYMM-#### (ex: 2501-0001)
 
 Dépendances:
   pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib reportlab python-dotenv
@@ -22,39 +22,37 @@ Usage:
   python mvp_invoicing.py --client-id <ID_CLIENT> --product-id <ID_PRODUIT> --qty 1 --notes "Séance du 5/12"
 """
 
-import os
-import sys
-import re
-import base64
 import argparse
+import base64
+import os
+import re
+import sys
 import unicodedata
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-
-from dotenv import load_dotenv
-
-# ReportLab (PDF)
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import ParagraphStyle
+from datetime import datetime
+from email.mime.application import MIMEApplication
 
 # Gmail MIME
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
+from typing import Dict, List, Optional
+
+from dotenv import load_dotenv
+from google.auth.transport.requests import Request
 
 # Google APIs
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
+from reportlab.lib import colors
 
+# ReportLab (PDF)
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -297,9 +295,13 @@ def append_facture_row(sheets, spreadsheet_id: str, sheet_title: str, row: List[
 def get_next_invoice_number_monthly(
     sheets, spreadsheet_id: str, sheet_title: str = "factures"
 ) -> str:
+    """
+    Génère le prochain numéro de facture au format YYMM-####
+    Exemple : 2501-0001 (janvier 2025)
+    """
     now = datetime.now()
-    yyyymm = f"{now.year}{now.month:02d}"
-    prefix = f"FACT-{yyyymm}-"
+    yymm = f"{now.year % 100:02d}{now.month:02d}"
+    prefix = f"{yymm}-"
 
     try:
         res = (
@@ -717,7 +719,7 @@ def main():
         <p>Bonjour {client.prenom} {client.nom},</p>
         <p>Veuillez trouver ci-joint votre facture <b>{invoice_number}</b> pour la prestation :
         <br/><i>{product.libelle}</i>.</p>
-        <p>Vous pouvez également consulter la facture en ligne : {drive_link}ouvrir dans Drive</a>.</p>
+        <p>Vous pouvez également consulter la facture en ligne : <a href="{drive_link}">ouvrir dans Drive</a>.</p>
         <p>Bien cordialement,<br/>{practice_name}</p>
         """
         send_email_gmail(
