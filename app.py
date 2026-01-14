@@ -166,8 +166,7 @@ product_obj = find_product(products, selected_product_id)
 
 # NOUVEAU v1.2 : Détecter si produit à montant variable
 is_variable_product = (
-    product_obj.id == "PAP variable" or 
-    "STAGE PAP" in product_obj.libelle.upper()
+    product_obj.id == "PAP variable" in product_obj.id
 )
 
 # Formulaire (évite double envoi)
