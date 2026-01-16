@@ -108,7 +108,7 @@ factures_title = data["factures_title"]
 # Lien vers l'historique des factures (Google Sheet)
 sheet_url = f"https://docs.google.com/spreadsheets/d/{ACCOUNTING_SPREADSHEET_ID}"
 st.markdown(
-    f"{sheet_url}"
+    f'<a href="{sheet_url}" target="_blank" style="text-decoration: none;">'
     f'<button style="background-color: #4CAF50; color: white; padding: 10px 20px; '
     f'border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">'
     f"📋 Voir l'historique des factures"
