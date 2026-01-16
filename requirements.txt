@@ -23,7 +23,8 @@ markupsafe
 narwhals
 numpy
 oauthlib
-packagingpandas
+packaging
+pandas
 pillow
 pip
 proto-plus
