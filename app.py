@@ -108,12 +108,12 @@ factures_title = data["factures_title"]
 # Lien vers l'historique des factures (Google Sheet)
 sheet_url = f"https://docs.google.com/spreadsheets/d/{ACCOUNTING_SPREADSHEET_ID}"
 st.markdown(
-    f'<a href="{sheet_url}" target="_blank" style="text-decoration: none;">'
+    f"{sheet_url}"
     f'<button style="background-color: #4CAF50; color: white; padding: 10px 20px; '
     f'border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">'
-    f'📋 Voir l\'historique des factures'
-    f'</button></a>',
-    unsafe_allow_html=True
+    f"📋 Voir l'historique des factures"
+    f"</button></a>",
+    unsafe_allow_html=True,
 )
 
 st.markdown("---")
@@ -160,24 +160,22 @@ product_options = {product_label(p): p.get("id") for p in products}
 selected_product_label = st.selectbox("💼 Produit", list(product_options.keys()))
 selected_product_id = product_options[selected_product_label]
 
-# Objet client/produit (récupération anticipée pour détecter produit variable)
+# Objet client/produit
 client_obj = find_client(clients, selected_client_id)
 product_obj = find_product(products, selected_product_id)
 
 # NOUVEAU v1.2 : Détecter si produit à montant variable
-is_variable_product = (
-    product_obj.id == "PAP variable" in product_obj.id
-)
+is_variable_product = product_obj.id == "PAP variable" in product_obj.id
 
-# Formulaire (évite double envoi)
+# Formulaire
 with st.form("invoice_form", clear_on_submit=False):
     col_q, col_var = st.columns([1, 2])
-    
+
     with col_q:
         qty = st.number_input(
             "🔢 Quantité", min_value=1, max_value=100, value=1, step=1
         )
-    
+
     # NOUVEAU v1.2 : Saisie manuelle montant HT pour produit variable
     with col_var:
         if is_variable_product:
@@ -186,12 +184,14 @@ with st.form("invoice_form", clear_on_submit=False):
                 min_value=0.0,
                 value=0.0,
                 step=10.0,
-                help="Pour le produit STAGE PAP, saisissez le montant HT manuellement. La TVA (20%) sera calculée automatiquement."
+                help="Pour le produit STAGE PAP, saisissez le montant HT manuellement. La TVA (20%) sera calculée automatiquement.",
             )
         else:
-            st.empty()  # Placeholder vide si pas produit variable
-    
-    notes = st.text_area("📝 Notes (dates séances/formations)", placeholder="Séance du ...")
+            st.empty()  # placeholder
+
+    notes = st.text_area(
+        "📝 Notes (dates séances/formations)", placeholder="Séance du ..."
+    )
 
     # Checkboxes envoi
     st.markdown("---")
@@ -208,7 +208,7 @@ with st.form("invoice_form", clear_on_submit=False):
         disabled=st.session_state.processing,
     )
 
-# Calcul des montants (selon produit variable ou non)
+# Calcul des montants
 if is_variable_product:
     # Produit variable : utiliser montant HT manuel
     montant_ht = montant_ht_manuel * qty
@@ -223,9 +223,11 @@ else:
 with st.expander("📄 Aperçu (affichage identique au Sheet)", expanded=True):
     st.write(f"**Client** : {client_obj.prenom} {client_obj.nom} — {client_obj.mail}")
     st.write(f"**Prestation** : {product_obj.libelle}")
-    
+
     if is_variable_product:
-        st.info("⚠️ Produit à montant variable - Calcul avec montant HT saisi manuellement + TVA 20%")
+        st.info(
+            "⚠️ Produit à montant variable - Calcul avec montant HT saisi manuellement + TVA 20%"
+        )
     else:
         st.write(f"**PU HT (sheet)** : {product_obj.prix_ht_raw}")
         st.write(f"**TVA (sheet)** : {product_obj.tva_raw}")
@@ -237,12 +239,14 @@ with st.expander("📄 Aperçu (affichage identique au Sheet)", expanded=True):
     c3.metric("Total TTC", fmt_eur(montant_ttc))
 
 if submitted and not st.session_state.processing:
-    # NOUVEAU v1.2 : Garde-fou notes obligatoires
+    # Garde-fou notes obligatoires (v1.2)
     if not notes or not notes.strip():
         st.error("❌ **Impossible d'envoyer la facture sans notes.**")
-        st.warning("⚠️ Veuillez ajouter une note avec les dates des séances/formations avant de générer la facture.")
+        st.warning(
+            "⚠️ Veuillez ajouter une note avec les dates des séances/formations avant de générer la facture."
+        )
         st.stop()
-    
+
     st.session_state.processing = True
     try:
         with st.spinner("Génération de la facture..."):
@@ -251,8 +255,8 @@ if submitted and not st.session_state.processing:
             )
             today = datetime.now().strftime("%d/%m/%Y")
 
-            # clé anti-double envoi (même client+produit+qty+date+notes)
-            send_key = f"{invoice_number}|{client_obj.id}|{product_obj.id}|{qty}|{notes.strip()}"
+            # Clé anti-double envoi (conservée telle quelle)
+            send_key = f"{invoice_number}\n{client_obj.id}\n{product_obj.id}\n{qty}\n{notes.strip()}"
 
             if st.session_state.last_sent_key == send_key:
                 st.warning(
@@ -263,7 +267,7 @@ if submitted and not st.session_state.processing:
             filename = f"{invoice_number}_{slugify(client_obj.nom)}_{slugify(client_obj.prenom)}.pdf"
             output_path = os.path.join(os.getcwd(), filename)
 
-            # NOUVEAU v1.2 : Passer le numéro ADELI et les montants pour produit variable
+            # Génération PDF (ADELI + overrides si produit variable)
             generate_invoice_pdf(
                 output_path=output_path,
                 invoice_number=invoice_number,
@@ -286,24 +290,23 @@ if submitted and not st.session_state.processing:
             uploaded = upload_to_drive(drive, output_path, GOOGLE_FOLDER_ID)
             drive_link = uploaded["link"]
 
-            # Envoi conditionnel selon checkboxes
+            # ----- CORRECTIF Critique.2 : envoi au comptable même si le client n'est pas destinataire -----
             recipient = client_obj.mail or ""
             send_ok_client = False
             send_ok_accountant = False
 
+            subject = f"Votre facture {invoice_number} - {PRACTICE_NAME}"
+            html_body = f"""
+<p>Bonjour {client_obj.prenom} {client_obj.nom},</p>
+<p>Veuillez trouver ci-joint votre facture <b>{invoice_number}</b> pour la prestation :
+<br/><i>{product_obj.libelle}</i>.</p>
+<p>Vous pouvez également consulter la facture en ligne : {drive_link}ouvrir dans Drive</a>.</p>
+<p>Bien cordialement,<br/>{PRACTICE_NAME}</p>
+"""
+
+            # 1) Envoi au client (avec CC au comptable si coché)
             if send_to_client and recipient:
-                subject = f"Votre facture {invoice_number} - {PRACTICE_NAME}"
-                html_body = f"""
-                <p>Bonjour {client_obj.prenom} {client_obj.nom},</p>
-                <p>Veuillez trouver ci-joint votre facture <b>{invoice_number}</b> pour la prestation :
-                <br/><i>{product_obj.libelle}</i>.</p>
-                <p>Vous pouvez également consulter la facture en ligne : <a href="{drive_link}">ouvrir dans Drive</a>.</p>
-                <p>Bien cordialement,<br/>{PRACTICE_NAME}</p>
-                """
-
-                # Envoi au client avec ou sans CC comptable selon checkbox
                 cc_email = ACCOUNTANT_EMAIL if send_to_accountant else None
-
                 send_email_gmail(
                     gmail,
                     SENDER_EMAIL or "me",
@@ -314,10 +317,24 @@ if submitted and not st.session_state.processing:
                     output_path,
                 )
                 send_ok_client = True
-                if send_to_accountant:
-                    send_ok_accountant = True
+                # Si CC comptable, on considère le comptable "servi"
+                send_ok_accountant = bool(send_to_accountant and ACCOUNTANT_EMAIL)
 
-            # log
+            # 2) Envoi distinct au comptable si demandé et pas déjà en CC
+            if send_to_accountant and ACCOUNTANT_EMAIL and not send_ok_accountant:
+                send_email_gmail(
+                    gmail,
+                    SENDER_EMAIL or "me",
+                    ACCOUNTANT_EMAIL,
+                    None,  # pas de CC ici
+                    subject,
+                    html_body,
+                    output_path,
+                )
+                send_ok_accountant = True
+            # ----- fin correctif -----
+
+            # Log dans Sheets
             row = [
                 invoice_number,
                 today,
@@ -342,30 +359,39 @@ if submitted and not st.session_state.processing:
             st.write(f"- Numéro : **{invoice_number}**")
             st.write(f"- Lien Drive : {drive_link}")
 
-            # Messages conditionnels selon checkboxes
+            # Messages d'envoi
             if send_ok_client:
                 if send_ok_accountant:
                     st.write(
-                        f"- Email envoyé à : **{recipient}** (CC: {ACCOUNTANT_EMAIL})"
+                        f"- Email envoyé au **client** ({recipient}) et au **comptable** ({ACCOUNTANT_EMAIL})."
                     )
                 else:
-                    st.write(f"- Email envoyé à : **{recipient}**")
+                    st.write(f"- Email envoyé au **client** : **{recipient}**")
             else:
                 if send_to_client and not recipient:
                     st.warning("⚠️ Email non envoyé au client (pas d'adresse email).")
                 else:
                     st.info("ℹ️ Email non envoyé au client (option désactivée).")
 
-            if not send_to_accountant:
-                st.info("ℹ️ Email non envoyé au comptable (option désactivée).")
+                if send_ok_accountant:
+                    st.write(
+                        f"- Email envoyé au **comptable** : **{ACCOUNTANT_EMAIL}**"
+                    )
+                elif send_to_accountant:
+                    st.warning(
+                        "⚠️ Email non envoyé au comptable (adresse comptable manquante)."
+                    )
+                else:
+                    st.info("ℹ️ Email non envoyé au comptable (option désactivée).")
 
-            with open(output_path, "rb") as f:
-                st.download_button(
-                    label="⬇️ Télécharger le PDF généré",
-                    data=f.read(),
-                    file_name=os.path.basename(output_path),
-                    mime="application/pdf",
-                )
+            # Téléchargement local
+            # with open(output_path, "rb") as f:
+            #     st.download_button(
+            #         label="⬇️ Télécharger le PDF généré",
+            #         data=f.read(),
+            #         file_name=os.path.basename(output_path),
+            #         mime="application/pdf",
+            #     )
 
     except Exception as e:
         st.error(f"❌ Erreur: {e}")
