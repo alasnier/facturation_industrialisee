@@ -1,0 +1,10 @@
+dotenv==0.9.9
+streamlit>=1.31,<2.0
+reportlab>=4.2,<5.0
+google-api-python-client>=2.120,<3.0
+google-auth>=2.20,<3.0
+google-auth-httplib2>=0.1,<1.0
+google-auth-oauthlib>=1.0,<2.0
+python-dotenv>=1.0,<2.0
+requests>=2.31,<3.0
+pyparsing<3
