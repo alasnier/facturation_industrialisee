@@ -34,7 +34,7 @@ pyasn1
 pyasn1-modules
 pydeck
 pyparsing
-python-dateutil.post0
+python-dateutil
 python-dotenv
 pytzreferencing
 reportlab
