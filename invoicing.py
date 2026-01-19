@@ -77,7 +77,7 @@ def load_google_credentials() -> Credentials:
             try:
                 creds.refresh(Request())
             except Exception as e:
-                print(f"⚠️ Refresh token error: {e}")
+                print(f"[NOT OK] Refresh token error: {e}")
                 creds = None
 
         if not creds:
@@ -455,7 +455,7 @@ def generate_invoice_pdf(
     elems.append(Paragraph(sanitize_pdf_text(practice_name), style_title))
 
     if practice_address:
-        # ✅ gère "\n" littéral dans .env
+        # [OK] gère "\n" littéral dans .env
         addr = practice_address.replace("\\n", "\n")
         addr = sanitize_pdf_text(addr).replace("\n", "<br/>")
         elems.append(Paragraph(addr, style_normal))
@@ -513,7 +513,7 @@ def generate_invoice_pdf(
         montant_ttc = product.prix_ttc * qty
         montant_tva = montant_ttc - montant_ht
 
-    # ✅ Affichage PU/TVA "raw" mais safe PDF (pas de carré noir)
+    # [OK] Affichage PU/TVA "raw" mais safe PDF (pas de carré noir)
     # Pour produit variable, afficher "Variable" au lieu du prix unitaire
     if montant_ht_override is not None:
         pu_ht_display = "Variable"
@@ -672,7 +672,7 @@ def main():
 
     if not folder_id or not acc_ss_id:
         print(
-            "❌ .env incomplet. Renseigne GOOGLE_FOLDER_ID et ACCOUNTING_SPREADSHEET_ID."
+            "[NOT OK]  .env incomplet. Renseigne GOOGLE_FOLDER_ID et ACCOUNTING_SPREADSHEET_ID."
         )
         sys.exit(1)
 
@@ -773,9 +773,9 @@ def main():
     ]
     append_facture_row(sheets, acc_ss_id, factures_title, row)
 
-    print(f"✅ Facture générée: {output_path}")
-    print(f"✅ Upload Drive: {drive_link}")
-    print(f"✅ Log ajouté dans '{factures_title}'")
+    print(f"[OK] Facture générée: {output_path}")
+    print(f"[OK] Upload Drive: {drive_link}")
+    print(f"[OK] Log ajouté dans '{factures_title}'")
 
 
 if __name__ == "__main__":
